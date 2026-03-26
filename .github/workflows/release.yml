@@ -82,23 +82,18 @@ jobs:
         shell: pwsh
         run: |
           git clone --depth 1 https://github.com/tdlib/td.git C:\td
-          cd C:\td; mkdir build; cd build
-          cmake -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
-            -DCMAKE_INSTALL_PREFIX=C:\tdlib `
-            ..
-          cmake --build . --target tdjson --config Release -- /m
-          # manual install since cmake --install may fail
+          New-Item -ItemType Directory -Force -Path C:\td\build | Out-Null
+          Set-Location C:\td\build
+          cmake -A x64 -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" -DCMAKE_INSTALL_PREFIX=C:\tdlib ..
+          cmake --build . --target tdjson --config Release
           New-Item -ItemType Directory -Force -Path C:\tdlib\lib | Out-Null
           New-Item -ItemType Directory -Force -Path C:\tdlib\bin | Out-Null
           New-Item -ItemType Directory -Force -Path C:\tdlib\include\td\telegram | Out-Null
-          Copy-Item C:\td\build\Release\tdjson.dll C:\tdlib\bin\ -ErrorAction SilentlyContinue
-          Copy-Item C:\td\build\Release\tdjson.lib C:\tdlib\lib\ -ErrorAction SilentlyContinue
-          Copy-Item C:\td\td\telegram\td_json_client.h C:\tdlib\include\td\telegram\ -ErrorAction SilentlyContinue
-          Copy-Item C:\td\td\telegram\td_log.h C:\tdlib\include\td\telegram\ -ErrorAction SilentlyContinue
-          # find tdjson_export.h
-          Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson_export.h" | ForEach-Object { Copy-Item $_.FullName C:\tdlib\include\td\telegram\ }
+          Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson.dll" | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName C:\tdlib\bin\ }
+          Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson.lib" | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName C:\tdlib\lib\ }
+          Copy-Item C:\td\td\telegram\td_json_client.h C:\tdlib\include\td\telegram\
+          Copy-Item C:\td\td\telegram\td_log.h C:\tdlib\include\td\telegram\
+          Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson_export.h" | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName C:\tdlib\include\td\telegram\ }
 
       - name: Build tgctl
         if: runner.os != 'Windows'
