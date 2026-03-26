@@ -57,6 +57,16 @@ Commands:
   startbot <chat> <bot> [param]            Start a bot in a chat
   typing <chat>                            Send typing status
 
+  updateprofile [--first n] [--last n] [--about t]  Update profile
+  setstatus <online|offline>               Set online status
+  chatinfo <chat>                          Get chat/user details
+  creategroup <title> <user1> [user2...]   Create a group
+  createchannel <title> [about]            Create a channel
+  editadmin <chat> <user> [remove]         Set/remove admin
+  resolvephone <phone>                     Resolve phone to user
+  commonchats <user>                       Common chats with user
+  translate <chat> <msg_id> <lang>         Translate a message
+
 Options:
   --profile <name>        Use named profile (default: "default")
   --help, -h              Show this help
@@ -290,6 +300,53 @@ func main() {
 				return fmt.Errorf("usage: tgctl typing <chat>")
 			}
 			return cmdTyping(ctx, api, cmdArgs[0])
+		case "updateprofile":
+			return cmdUpdateProfile(ctx, api, cmdArgs)
+		case "setstatus":
+			if len(cmdArgs) < 1 {
+				return fmt.Errorf("usage: tgctl setstatus <online|offline>")
+			}
+			return cmdSetStatus(ctx, api, cmdArgs[0])
+		case "chatinfo":
+			if len(cmdArgs) < 1 {
+				return fmt.Errorf("usage: tgctl chatinfo <chat>")
+			}
+			return cmdChatInfo(ctx, api, cmdArgs[0])
+		case "creategroup":
+			if len(cmdArgs) < 2 {
+				return fmt.Errorf("usage: tgctl creategroup <title> <user1> [user2...]")
+			}
+			return cmdCreateGroup(ctx, api, cmdArgs[0], cmdArgs[1:])
+		case "createchannel":
+			if len(cmdArgs) < 1 {
+				return fmt.Errorf("usage: tgctl createchannel <title> [about]")
+			}
+			about := ""
+			if len(cmdArgs) > 1 {
+				about = strings.Join(cmdArgs[1:], " ")
+			}
+			return cmdCreateChannel(ctx, api, cmdArgs[0], about)
+		case "editadmin":
+			if len(cmdArgs) < 2 {
+				return fmt.Errorf("usage: tgctl editadmin <chat> <user> [remove]")
+			}
+			remove := len(cmdArgs) > 2 && cmdArgs[2] == "remove"
+			return cmdEditAdmin(ctx, api, cmdArgs[0], cmdArgs[1], remove)
+		case "resolvephone":
+			if len(cmdArgs) < 1 {
+				return fmt.Errorf("usage: tgctl resolvephone <phone>")
+			}
+			return cmdResolvePhone(ctx, api, cmdArgs[0])
+		case "commonchats":
+			if len(cmdArgs) < 1 {
+				return fmt.Errorf("usage: tgctl commonchats <user>")
+			}
+			return cmdCommonChats(ctx, api, cmdArgs[0])
+		case "translate":
+			if len(cmdArgs) < 3 {
+				return fmt.Errorf("usage: tgctl translate <chat> <msg_id> <lang>")
+			}
+			return cmdTranslate(ctx, api, cmdArgs[0], cmdArgs[1], cmdArgs[2])
 		default:
 			return fmt.Errorf("unknown command: %s", cmd)
 		}
@@ -1366,5 +1423,255 @@ func cmdTyping(ctx context.Context, api *tg.Client, chatArg string) error {
 		return err
 	}
 	fmt.Println("Typing...")
+	return nil
+}
+
+func cmdUpdateProfile(ctx context.Context, api *tg.Client, args []string) error {
+	req := &tg.AccountUpdateProfileRequest{}
+	for i := 0; i < len(args)-1; i += 2 {
+		switch args[i] {
+		case "--first":
+			req.FirstName = args[i+1]
+			req.SetFlags()
+		case "--last":
+			req.LastName = args[i+1]
+			req.SetFlags()
+		case "--about":
+			req.About = args[i+1]
+			req.SetFlags()
+		default:
+			return fmt.Errorf("usage: tgctl updateprofile [--first name] [--last name] [--about text]")
+		}
+	}
+	_, err := api.AccountUpdateProfile(ctx, req)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Profile updated.")
+	return nil
+}
+
+func cmdSetStatus(ctx context.Context, api *tg.Client, status string) error {
+	offline := status == "offline"
+	_, err := api.AccountUpdateStatus(ctx, offline)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Status set to %s.\n", status)
+	return nil
+}
+
+func cmdChatInfo(ctx context.Context, api *tg.Client, chatArg string) error {
+	peer, err := resolvePeer(ctx, api, chatArg)
+	if err != nil {
+		return fmt.Errorf("resolve chat: %w", err)
+	}
+	if ch, ok := peerToInputChannel(peer); ok {
+		full, err := api.ChannelsGetFullChannel(ctx, ch)
+		if err != nil {
+			return err
+		}
+		if info, ok := full.FullChat.(*tg.ChannelFull); ok {
+			fmt.Printf("ID: %d\n", info.ID)
+			fmt.Printf("About: %s\n", info.About)
+			fmt.Printf("Members: %d\n", info.ParticipantsCount)
+			fmt.Printf("Admins: %d\n", info.AdminsCount)
+			fmt.Printf("Online: %d\n", info.OnlineCount)
+		}
+		for _, c := range full.Chats {
+			switch v := c.(type) {
+			case *tg.Channel:
+				fmt.Printf("Title: %s\n", v.Title)
+				if v.Username != "" {
+					fmt.Printf("Username: @%s\n", v.Username)
+				}
+			}
+		}
+	} else if p, ok := peer.(*tg.InputPeerChat); ok {
+		full, err := api.MessagesGetFullChat(ctx, p.ChatID)
+		if err != nil {
+			return err
+		}
+		if info, ok := full.FullChat.(*tg.ChatFull); ok {
+			fmt.Printf("ID: %d\n", info.ID)
+			fmt.Printf("About: %s\n", info.About)
+		}
+		for _, c := range full.Chats {
+			if chat, ok := c.(*tg.Chat); ok {
+				fmt.Printf("Title: %s\n", chat.Title)
+				fmt.Printf("Members: %d\n", chat.ParticipantsCount)
+			}
+		}
+	} else if p, ok := peer.(*tg.InputPeerUser); ok {
+		users, err := api.UsersGetFullUser(ctx, &tg.InputUser{UserID: p.UserID, AccessHash: p.AccessHash})
+		if err != nil {
+			return err
+		}
+		info := users.FullUser
+		fmt.Printf("ID: %d\n", info.ID)
+		fmt.Printf("About: %s\n", info.About)
+		fmt.Printf("CommonChats: %d\n", info.CommonChatsCount)
+		for _, u := range users.Users {
+			if user, ok := u.(*tg.User); ok {
+				name := strings.TrimSpace(user.FirstName + " " + user.LastName)
+				fmt.Printf("Name: %s\n", name)
+				if user.Username != "" {
+					fmt.Printf("Username: @%s\n", user.Username)
+				}
+				fmt.Printf("Phone: %s\n", user.Phone)
+			}
+		}
+	}
+	return nil
+}
+
+func cmdCreateGroup(ctx context.Context, api *tg.Client, title string, userArgs []string) error {
+	var users []tg.InputUserClass
+	for _, u := range userArgs {
+		inputUser, err := peerToInputUser(ctx, api, u)
+		if err != nil {
+			return fmt.Errorf("resolve user %s: %w", u, err)
+		}
+		users = append(users, inputUser)
+	}
+	_, err := api.MessagesCreateChat(ctx, &tg.MessagesCreateChatRequest{
+		Title: title,
+		Users: users,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Group '%s' created.\n", title)
+	return nil
+}
+
+func cmdCreateChannel(ctx context.Context, api *tg.Client, title, about string) error {
+	_, err := api.ChannelsCreateChannel(ctx, &tg.ChannelsCreateChannelRequest{
+		Title:     title,
+		About:     about,
+		Broadcast: true,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Channel '%s' created.\n", title)
+	return nil
+}
+
+func cmdEditAdmin(ctx context.Context, api *tg.Client, chatArg, userArg string, remove bool) error {
+	peer, err := resolvePeer(ctx, api, chatArg)
+	if err != nil {
+		return fmt.Errorf("resolve chat: %w", err)
+	}
+	inputUser, err := peerToInputUser(ctx, api, userArg)
+	if err != nil {
+		return fmt.Errorf("resolve user: %w", err)
+	}
+	ch, ok := peerToInputChannel(peer)
+	if !ok {
+		return fmt.Errorf("not a channel/supergroup")
+	}
+	rights := tg.ChatAdminRights{}
+	if !remove {
+		rights = tg.ChatAdminRights{
+			ChangeInfo:     true,
+			DeleteMessages: true,
+			BanUsers:       true,
+			InviteUsers:    true,
+			PinMessages:    true,
+			ManageCall:     true,
+		}
+	}
+	_, err = api.ChannelsEditAdmin(ctx, &tg.ChannelsEditAdminRequest{
+		Channel:    ch,
+		UserID:     inputUser,
+		AdminRights: rights,
+		Rank:       "",
+	})
+	if err != nil {
+		return err
+	}
+	if remove {
+		fmt.Println("Admin removed.")
+	} else {
+		fmt.Println("Admin set.")
+	}
+	return nil
+}
+
+func cmdResolvePhone(ctx context.Context, api *tg.Client, phone string) error {
+	result, err := api.ContactsResolvePhone(ctx, phone)
+	if err != nil {
+		return err
+	}
+	for _, u := range result.Users {
+		if user, ok := u.(*tg.User); ok {
+			name := strings.TrimSpace(user.FirstName + " " + user.LastName)
+			fmt.Printf("User: %d  %s (@%s)\n", user.ID, name, user.Username)
+		}
+	}
+	return nil
+}
+
+func cmdCommonChats(ctx context.Context, api *tg.Client, userArg string) error {
+	inputUser, err := peerToInputUser(ctx, api, userArg)
+	if err != nil {
+		return fmt.Errorf("resolve user: %w", err)
+	}
+	// need InputUser, not InputUserClass
+	iu, ok := inputUser.(*tg.InputUser)
+	if !ok {
+		return fmt.Errorf("not a regular user")
+	}
+	result, err := api.MessagesGetCommonChats(ctx, &tg.MessagesGetCommonChatsRequest{
+		UserID: iu,
+		Limit:  100,
+	})
+	if err != nil {
+		return err
+	}
+	switch r := result.(type) {
+	case *tg.MessagesChats:
+		for _, c := range r.Chats {
+			switch v := c.(type) {
+			case *tg.Chat:
+				fmt.Printf("-%d  %s\n", v.ID, v.Title)
+			case *tg.Channel:
+				fmt.Printf("-%d  %s\n", v.ID, v.Title)
+			}
+		}
+	case *tg.MessagesChatsSlice:
+		for _, c := range r.Chats {
+			switch v := c.(type) {
+			case *tg.Chat:
+				fmt.Printf("-%d  %s\n", v.ID, v.Title)
+			case *tg.Channel:
+				fmt.Printf("-%d  %s\n", v.ID, v.Title)
+			}
+		}
+	}
+	return nil
+}
+
+func cmdTranslate(ctx context.Context, api *tg.Client, chatArg, msgIDArg, lang string) error {
+	peer, err := resolvePeer(ctx, api, chatArg)
+	if err != nil {
+		return fmt.Errorf("resolve chat: %w", err)
+	}
+	msgID, err := strconv.Atoi(msgIDArg)
+	if err != nil {
+		return fmt.Errorf("invalid msg_id: %w", err)
+	}
+	result, err := api.MessagesTranslateText(ctx, &tg.MessagesTranslateTextRequest{
+		Peer:   peer,
+		ID:     []int{msgID},
+		ToLang: lang,
+	})
+	if err != nil {
+		return err
+	}
+	for _, r := range result.Result {
+		fmt.Println(r.Text)
+	}
 	return nil
 }
