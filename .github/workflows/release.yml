@@ -25,6 +25,10 @@ jobs:
             goos: linux
             goarch: amd64
             suffix: linux-amd64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            suffix: windows-amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -45,7 +49,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake gperf libssl-dev zlib1g-dev build-essential
 
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install gperf cmake openssl -y
+          echo "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" >> $env:GITHUB_ENV
+
       - name: Build TDLib
+        if: runner.os != 'Windows'
         run: |
           git clone --depth 1 https://github.com/tdlib/td.git /tmp/td
           cd /tmp/td && mkdir build && cd build
@@ -66,7 +77,27 @@ jobs:
           cp /tmp/td/td/telegram/td_log.h $HOME/.local/tdlib/include/td/telegram/ 2>/dev/null || true
           cp /tmp/td/build/td/telegram/tdjson_export.h $HOME/.local/tdlib/include/td/telegram/ 2>/dev/null || true
 
+      - name: Build TDLib (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/tdlib/td.git C:\td
+          cd C:\td; mkdir build; cd build
+          cmake -DCMAKE_BUILD_TYPE=Release `
+            -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+            -DCMAKE_INSTALL_PREFIX=C:\tdlib `
+            ..
+          cmake --build . --target tdjson --config Release -j $env:NUMBER_OF_PROCESSORS
+          cmake --install . --config Release
+          # copy headers if missing
+          New-Item -ItemType Directory -Force -Path C:\tdlib\include\td\telegram | Out-Null
+          Copy-Item C:\td\td\telegram\td_json_client.h C:\tdlib\include\td\telegram\ -ErrorAction SilentlyContinue
+          Copy-Item C:\td\td\telegram\td_log.h C:\tdlib\include\td\telegram\ -ErrorAction SilentlyContinue
+          Copy-Item C:\td\build\Release\tdjson_export.h C:\tdlib\include\td\telegram\ -ErrorAction SilentlyContinue
+          Copy-Item C:\td\build\td\telegram\tdjson_export.h C:\tdlib\include\td\telegram\ -ErrorAction SilentlyContinue
+
       - name: Build tgctl
+        if: runner.os != 'Windows'
         env:
           CGO_CFLAGS: -I${{ github.workspace }}/tdlib/include
           CGO_LDFLAGS: -L${{ github.workspace }}/tdlib/lib -ltdjson
@@ -80,17 +111,41 @@ jobs:
           CGO_ENABLED=1 \
           go build -ldflags="-w -s" -o tgctl-${{ matrix.suffix }} ./cmd/tgctl/
 
+      - name: Build tgctl (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # symlink tdlib
+          New-Item -ItemType Junction -Path tdlib -Target C:\tdlib -Force | Out-Null
+          $env:CGO_CFLAGS = "-IC:\tdlib\include"
+          $env:CGO_LDFLAGS = "-LC:\tdlib\lib -ltdjson"
+          $env:CGO_ENABLED = "1"
+          go build -ldflags="-w -s" -o tgctl-${{ matrix.suffix }}.exe ./cmd/tgctl/
+
       - name: Package
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp tgctl-${{ matrix.suffix }} dist/
           cp $HOME/.local/tdlib/lib/libtdjson* dist/ 2>/dev/null || true
           cd dist && tar czf ../tgctl-${{ matrix.suffix }}.tar.gz *
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item tgctl-${{ matrix.suffix }}.exe dist\
+          Copy-Item C:\tdlib\bin\tdjson.dll dist\ -ErrorAction SilentlyContinue
+          Copy-Item C:\tdlib\lib\tdjson.dll dist\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist\* -DestinationPath tgctl-${{ matrix.suffix }}.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: tgctl-${{ matrix.suffix }}
-          path: tgctl-${{ matrix.suffix }}.tar.gz
+          path: |
+            tgctl-${{ matrix.suffix }}.tar.gz
+            tgctl-${{ matrix.suffix }}.zip
 
   release:
     needs: build
@@ -103,5 +158,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
           generate_release_notes: true
