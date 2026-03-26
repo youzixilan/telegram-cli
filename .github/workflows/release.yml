@@ -10,6 +10,7 @@ permissions:
 
 env:
   TDLIB_COMMIT: "0ae923c493bceb75433de2682ba8ae29cc7bf88d"
+  VCPKG_COMMIT: "bf27d5f65a6352c13ec2b7fdf79f7a0f0846a79f"
 
 jobs:
   build:
@@ -102,9 +103,6 @@ jobs:
           test -n "$export_hdr"
           cp "$export_hdr" "$HOME/.local/tdlib/include/td/telegram/"
 
-          ls -la "$HOME/.local/tdlib/lib/"
-          ls -la "$HOME/.local/tdlib/include/td/telegram/"
-
       - name: Build tgctl
         shell: bash
         run: |
@@ -179,19 +177,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           choco install -y gperf
           "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+      - name: Setup vcpkg manually
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          Set-Location C:\vcpkg
+          git checkout $env:VCPKG_COMMIT
+          .\bootstrap-vcpkg.bat -disableMetrics
+
+          "C:\vcpkg" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install native dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          vcpkg install zlib:x64-windows openssl:x64-windows
+          C:\vcpkg\vcpkg.exe install zlib:x64-windows openssl:x64-windows
 
       - name: Build TDLib
         shell: pwsh
@@ -206,19 +212,15 @@ jobs:
             -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_INSTALL_PREFIX=C:\tdlib `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DOPENSSL_USE_STATIC_LIBS=OFF
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "CMake configure failed"
-          }
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
           cmake --build build --config Release --target tdjson --parallel
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "TDLib build failed"
-          }
+          if ($LASTEXITCODE -ne 0) { throw "TDLib build failed" }
 
           New-Item -ItemType Directory -Force -Path C:\tdlib\bin | Out-Null
           New-Item -ItemType Directory -Force -Path C:\tdlib\lib | Out-Null
@@ -238,10 +240,6 @@ jobs:
           $exportHdr = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson_export.h" | Select-Object -First 1
           if (-not $exportHdr) { throw "tdjson_export.h not found" }
           Copy-Item $exportHdr.FullName C:\tdlib\include\td\telegram\
-
-          Get-ChildItem C:\tdlib\bin
-          Get-ChildItem C:\tdlib\lib
-          Get-ChildItem C:\tdlib\include\td\telegram
 
       - name: Build tgctl
         shell: pwsh
@@ -266,7 +264,7 @@ jobs:
           Copy-Item tgctl-windows-amd64.exe dist\
           Copy-Item C:\tdlib\bin\tdjson.dll dist\
 
-          $vcpkgBin = Join-Path $env:VCPKG_ROOT "installed\x64-windows\bin"
+          $vcpkgBin = "C:\vcpkg\installed\x64-windows\bin"
           @(
             "zlib1.dll",
             "libssl-3-x64.dll",
@@ -289,7 +287,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Set-Location dist
-
           .\tgctl-windows-amd64.exe --help
           if ($LASTEXITCODE -ne 0) {
             .\tgctl-windows-amd64.exe -h
