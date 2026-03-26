@@ -7,12 +7,38 @@ description: Manage Telegram via TDLib - login, send messages, create bots, list
 
 User-account-level Telegram management via TDLib.
 
-## Prerequisites
+## First-Time Setup
 
-- `tgctl` binary built and on PATH (see `references/install.md`)
-- `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` env vars set
-- Logged in (`tgctl login`, session persists in `~/.tgctl/`)
-- Binary path and env recorded in TOOLS.md
+If `tgctl` is not installed or TOOLS.md has no tgctl config, run the setup flow:
+
+### Step 1: Install binary
+```bash
+curl -fsSL https://raw.githubusercontent.com/youzixilan/go-tdlib/main/skill/scripts/install.sh | bash
+```
+
+### Step 2: Get API credentials
+Ask the user to go to https://my.telegram.org → API Development → get `api_id` and `api_hash`.
+
+### Step 3: Login
+```bash
+TELEGRAM_API_ID=<id> TELEGRAM_API_HASH=<hash> tgctl login
+```
+User enters phone number, auth code (NOT via Telegram!), and optional 2FA password.
+
+### Step 4: Save config to TOOLS.md
+After login succeeds, append to workspace TOOLS.md:
+```markdown
+### tgctl
+- Binary: ~/.local/bin/tgctl
+- Env: TELEGRAM_API_ID=<id> TELEGRAM_API_HASH=<hash>
+- Profile: default
+```
+
+## Prerequisites (after setup)
+
+- `tgctl` binary installed (check: `which tgctl` or `~/.local/bin/tgctl`)
+- `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from TOOLS.md
+- Session persists in `~/.tgctl/<profile>/`
 
 ## Commands
 
@@ -35,22 +61,20 @@ TELEGRAM_API_ID=<id> TELEGRAM_API_HASH=<hash> tgctl [--profile <name>] <command>
 ## Multi-Account (--profile)
 
 ```bash
-tgctl --profile work login     # login with work account
-tgctl --profile personal login # login with personal account
-tgctl --profile work me        # use work account
+tgctl --profile work login
+tgctl --profile personal login
+tgctl --profile work me
 tgctl me                       # uses "default" profile
 ```
 
-Each profile stores its own session in `~/.tgctl/<profile>/`.
-
 ## Chat ID Format
 
-- **Private chat**: Use user ID directly (e.g. `8568316820`). tgctl auto-creates the private chat via `createPrivateChat`.
-- **Group/Channel**: Add `-100` prefix to the peer ID. E.g. peer ID `3805592010` → chat ID `-1003805592010`.
-- **@username**: Use directly (e.g. `@BotFather`).
+- **Private chat**: User ID directly (auto-creates via `createPrivateChat`)
+- **Group/Channel**: Add `-100` prefix (e.g. `3805592010` → `-1003805592010`)
+- **@username**: Use directly (e.g. `@BotFather`)
 
 ## Security
 
 - Credentials in env vars only, never hardcode
 - `~/.tgctl/` contains auth session — protect it
-- Auth codes must not be sent via Telegram (will be blocked by Telegram's security)
+- Auth codes must not be sent via Telegram (will be blocked)
