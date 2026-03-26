@@ -4,12 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
-
-env:
-  TDLIB_COMMIT: "0ae923c493bceb75433de2682ba8ae29cc7bf88d"
 
 jobs:
   build:
@@ -17,297 +15,61 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
-            goos: darwin
+          - goos: darwin
             goarch: arm64
             suffix: darwin-arm64
-
-          - os: macos-15-intel
-            goos: darwin
+          - goos: darwin
             goarch: amd64
             suffix: darwin-amd64
-
-          - os: ubuntu-latest
-            goos: linux
+          - goos: linux
             goarch: amd64
             suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
 
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
         run: |
           set -euxo pipefail
-          brew install gperf openssl@3 cmake
-
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            gperf \
-            libssl-dev \
-            zlib1g-dev \
-            build-essential
-
-      - name: Build TDLib
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          git clone https://github.com/tdlib/td.git /tmp/td
-          cd /tmp/td
-          git checkout "${TDLIB_COMMIT}"
-
-          mkdir -p build
-          cd build
-
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            OPENSSL_ROOT="$(brew --prefix openssl@3)"
-          else
-            OPENSSL_ROOT="/usr"
-          fi
-
-          cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOPENSSL_ROOT_DIR="${OPENSSL_ROOT}" \
-            -DCMAKE_INSTALL_PREFIX="$HOME/.local/tdlib" \
-            ..
-
-          cmake --build . --target tdjson -j4
-
-          mkdir -p "$HOME/.local/tdlib/lib"
-          mkdir -p "$HOME/.local/tdlib/include/td/telegram"
-
-          find /tmp/td/build \( -name "libtdjson*.dylib" -o -name "libtdjson*.so*" \) -type f -print0 \
-            | while IFS= read -r -d '' f; do
-                cp "$f" "$HOME/.local/tdlib/lib/"
-              done
-
-          # create version-less symlinks for -ltdjson
-          cd "$HOME/.local/tdlib/lib"
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            ln -sf libtdjson.1.8.62.dylib libtdjson.dylib
-          else
-            ln -sf libtdjson.so.1.8.62 libtdjson.so
-          fi
-
-          cp /tmp/td/td/telegram/td_json_client.h "$HOME/.local/tdlib/include/td/telegram/"
-          cp /tmp/td/td/telegram/td_log.h "$HOME/.local/tdlib/include/td/telegram/"
-
-          export_hdr="$(find /tmp/td/build -name "tdjson_export.h" -type f | head -1)"
-          test -n "$export_hdr"
-          cp "$export_hdr" "$HOME/.local/tdlib/include/td/telegram/"
-
-      - name: Build tgctl
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          ln -sf "$HOME/.local/tdlib" "${{ github.workspace }}/tdlib"
-
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            RPATH_FLAG="-Wl,-rpath,@executable_path"
-          else
-            RPATH_FLAG="-Wl,-rpath,\$ORIGIN"
-          fi
-
-          export GOOS="${{ matrix.goos }}"
-          export GOARCH="${{ matrix.goarch }}"
-          export CGO_ENABLED=1
-          export CGO_CFLAGS="-I$HOME/.local/tdlib/include"
-          export CGO_LDFLAGS="-L$HOME/.local/tdlib/lib -ltdjson ${RPATH_FLAG}"
-
-          go build -ldflags="-w -s" -o "tgctl-${{ matrix.suffix }}" ./cmd/tgctl/
-
-      - name: Smoke test
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p smoke
-          cp "tgctl-${{ matrix.suffix }}" smoke/
-          cp "$HOME/.local/tdlib/lib"/libtdjson* smoke/
-          cd smoke
-
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            ldd "./tgctl-${{ matrix.suffix }}" || true
-          fi
-
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            otool -L "./tgctl-${{ matrix.suffix }}" || true
-          fi
-
-          "./tgctl-${{ matrix.suffix }}" --help || "./tgctl-${{ matrix.suffix }}" -h || true
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags="-w -s" -o "tgctl-${{ matrix.suffix }}${EXT}" ./cmd/tgctl/
 
       - name: Package
-        shell: bash
         run: |
           set -euxo pipefail
-
-          mkdir -p dist
-          cp "tgctl-${{ matrix.suffix }}" dist/
-          cp "$HOME/.local/tdlib/lib"/libtdjson* dist/
-          cd dist
-          tar czf "../tgctl-${{ matrix.suffix }}.tar.gz" *
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "tgctl-${{ matrix.suffix }}.zip" "tgctl-${{ matrix.suffix }}.exe"
+          else
+            tar czf "tgctl-${{ matrix.suffix }}.tar.gz" "tgctl-${{ matrix.suffix }}"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: tgctl-${{ matrix.suffix }}
-          path: tgctl-${{ matrix.suffix }}.tar.gz
-
-  build-windows:
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install gperf
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          choco install -y gperf
-          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Setup vcpkg manually
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-          Set-Location C:\vcpkg
-          git checkout $env:VCPKG_COMMIT
-          .\bootstrap-vcpkg.bat -disableMetrics
-
-          "C:\vcpkg" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install native dependencies
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          C:\vcpkg\vcpkg.exe install zlib:x64-windows openssl:x64-windows
-
-      - name: Build TDLib
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          git clone https://github.com/tdlib/td.git C:\td
-          Set-Location C:\td
-          git checkout $env:TDLIB_COMMIT
-
-          cmake -S . -B build `
-            -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_INSTALL_PREFIX=C:\tdlib `
-            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DOPENSSL_USE_STATIC_LIBS=OFF
-
-          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
-
-          cmake --build build --config Release --target tdjson --parallel
-
-          if ($LASTEXITCODE -ne 0) { throw "TDLib build failed" }
-
-          New-Item -ItemType Directory -Force -Path C:\tdlib\bin | Out-Null
-          New-Item -ItemType Directory -Force -Path C:\tdlib\lib | Out-Null
-          New-Item -ItemType Directory -Force -Path C:\tdlib\include\td\telegram | Out-Null
-
-          $tdjsonDll = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson.dll" | Select-Object -First 1
-          if (-not $tdjsonDll) { throw "tdjson.dll not found" }
-          Copy-Item $tdjsonDll.FullName C:\tdlib\bin\
-
-          $tdjsonLib = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson.lib" | Select-Object -First 1
-          if (-not $tdjsonLib) { throw "tdjson.lib not found" }
-          Copy-Item $tdjsonLib.FullName C:\tdlib\lib\
-
-          Copy-Item C:\td\td\telegram\td_json_client.h C:\tdlib\include\td\telegram\
-          Copy-Item C:\td\td\telegram\td_log.h C:\tdlib\include\td\telegram\
-
-          $exportHdr = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson_export.h" | Select-Object -First 1
-          if (-not $exportHdr) { throw "tdjson_export.h not found" }
-          Copy-Item $exportHdr.FullName C:\tdlib\include\td\telegram\
-
-      - name: Build tgctl
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Set-Location $env:GITHUB_WORKSPACE
-
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          $env:CGO_ENABLED = "1"
-          $env:CGO_CFLAGS = "-IC:\tdlib\include"
-          $env:CGO_LDFLAGS = "-LC:\tdlib\lib -ltdjson"
-
-          go build -ldflags="-w -s" -o tgctl-windows-amd64.exe ./cmd/tgctl/
-
-      - name: Package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item tgctl-windows-amd64.exe dist\
-          Copy-Item C:\tdlib\bin\tdjson.dll dist\
-
-          $vcpkgBin = "C:\vcpkg\installed\x64-windows\bin"
-          @(
-            "zlib1.dll",
-            "libssl-3-x64.dll",
-            "libcrypto-3-x64.dll"
-          ) | ForEach-Object {
-            $src = Join-Path $vcpkgBin $_
-            if (Test-Path $src) {
-              Copy-Item $src dist\
-            } else {
-              Write-Host "missing runtime: $_"
-            }
-          }
-
-          Get-ChildItem dist\
-
-          Compress-Archive -Path dist\* -DestinationPath tgctl-windows-amd64.zip -Force
-
-      - name: Smoke test
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Set-Location dist
-          .\tgctl-windows-amd64.exe --help
-          if ($LASTEXITCODE -ne 0) {
-            .\tgctl-windows-amd64.exe -h
-          }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tgctl-windows-amd64
-          path: tgctl-windows-amd64.zip
+          path: |
+            tgctl-${{ matrix.suffix }}.tar.gz
+            tgctl-${{ matrix.suffix }}.zip
 
   release:
-    needs: [build, build-windows]
+    needs: build
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/download-artifact@v4
         with:
