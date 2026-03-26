@@ -16,7 +16,7 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-const usage = `tgctl - Telegram CLI (pure Go, no TDLib)
+const usage = `tgctl - Telegram CLI (pure Go, powered by gotd/td)
 
 Usage:
   tgctl [--profile <name>] <command> [args...]

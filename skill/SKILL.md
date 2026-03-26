@@ -5,7 +5,7 @@ description: Manage Telegram via pure Go client (gotd/td) - login, send messages
 
 # Telegram CLI (tgctl)
 
-User-account-level Telegram management. Pure Go, no TDLib, no CGO.
+User-account-level Telegram management. Pure Go, no CGO.
 
 ## First-Time Setup
 
@@ -13,7 +13,7 @@ If `tgctl` is not installed or TOOLS.md has no tgctl config, run the setup flow:
 
 ### Step 1: Install binary
 ```bash
-curl -fsSL https://raw.githubusercontent.com/youzixilan/go-tdlib/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/youzixilan/telegram-cli/main/scripts/install.sh | bash
 ```
 
 ### Step 2: Get API credentials

@@ -1,4 +1,4 @@
-module github.com/aqin/go-tdlib
+module github.com/aqin/telegram-cli
 
 go 1.25.5
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="youzixilan/go-tdlib"
+REPO="youzixilan/telegram-cli"
 INSTALL_DIR="${TGCTL_INSTALL_DIR:-$HOME/.local}"
 BIN_DIR="$INSTALL_DIR/bin"
 

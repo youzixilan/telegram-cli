@@ -1,21 +1,21 @@
-# go-tdlib
+# telegram-cli
 
-Telegram CLI tool powered by [gotd/td](https://github.com/gotd/td) — pure Go, no TDLib, no CGO.
+Telegram CLI tool powered by [gotd/td](https://github.com/gotd/td) — pure Go, no CGO.
 
 ## Install
 
 ### Pre-built binary
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/youzixilan/go-tdlib/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/youzixilan/telegram-cli/main/scripts/install.sh | bash
 ```
 
-Or download from [Releases](https://github.com/youzixilan/go-tdlib/releases).
+Or download from [Releases](https://github.com/youzixilan/telegram-cli/releases).
 
 ### Build from source
 
 ```bash
-go install github.com/aqin/go-tdlib/cmd/tgctl@latest
+go install github.com/aqin/telegram-cli/cmd/tgctl@latest
 ```
 
 ## Usage
