@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,7 @@ Commands:
   search <query>          Search public chats
   contacts                List contacts
   listen [--user id] [--chat id]  Listen for new messages
+  callback <chat> <msg_id> <data>  Click inline keyboard button
   logout                  Logout
 
 Options:
@@ -151,6 +153,11 @@ func main() {
 			return cmdContacts(ctx, api)
 		case "listen":
 			return cmdListen(ctx, client, cmdArgs)
+		case "callback":
+			if len(cmdArgs) < 3 {
+				return fmt.Errorf("usage: tgctl callback <chat> <msg_id> <data>")
+			}
+			return cmdCallback(ctx, api, cmdArgs[0], cmdArgs[1], cmdArgs[2])
 		case "logout":
 			return cmdLogout(ctx, client)
 		default:
@@ -234,8 +241,8 @@ func cmdSend(ctx context.Context, api *tg.Client, chatArg, text string) error {
 		return fmt.Errorf("resolve chat: %w", err)
 	}
 	updates, err := api.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
-		Peer:    peer,
-		Message: text,
+		Peer:     peer,
+		Message:  text,
 		RandomID: time.Now().UnixNano(),
 	})
 	if err != nil {
@@ -344,7 +351,7 @@ func cmdHistory(ctx context.Context, api *tg.Client, chatArg string, limit int) 
 				senderID = u.UserID
 			}
 		}
-		fmt.Printf("[%s] %d: %s\n", t, senderID, text)
+		fmt.Printf("[%s] #%d %d: %s\n", t, msg.ID, senderID, text)
 	}
 	return nil
 }
@@ -468,6 +475,50 @@ func cmdListen(ctx context.Context, client *telegram.Client, args []string) erro
 	// Block forever, updates come through client's update handler
 	<-ctx.Done()
 	return nil
+}
+
+func cmdCallback(ctx context.Context, api *tg.Client, chatArg, msgIDArg, data string) error {
+	peer, err := resolvePeer(ctx, api, chatArg)
+	if err != nil {
+		return fmt.Errorf("resolve chat: %w", err)
+	}
+
+	msgID, err := strconv.Atoi(msgIDArg)
+	if err != nil {
+		return fmt.Errorf("invalid msg_id: %w", err)
+	}
+
+	// try base64 decode first, fallback to raw string
+	dataBytes, err := base64Decode(data)
+	if err != nil {
+		dataBytes = []byte(data)
+	}
+
+	result, err := api.MessagesGetBotCallbackAnswer(ctx, &tg.MessagesGetBotCallbackAnswerRequest{
+		Peer:  peer,
+		MsgID: msgID,
+		Data:  dataBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("callback: %w", err)
+	}
+
+	if result.Message != "" {
+		fmt.Println(result.Message)
+	} else if result.URL != "" {
+		fmt.Println(result.URL)
+	} else {
+		fmt.Println("Callback sent.")
+	}
+	return nil
+}
+
+func base64Decode(s string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		b, err = base64.RawStdEncoding.DecodeString(s)
+	}
+	return b, err
 }
 
 func cmdLogout(ctx context.Context, client *telegram.Client) error {
