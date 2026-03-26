@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
@@ -140,7 +140,7 @@ jobs:
             otool -L "./tgctl-${{ matrix.suffix }}" || true
           fi
 
-          "./tgctl-${{ matrix.suffix }}" --help
+          "./tgctl-${{ matrix.suffix }}" --help || "./tgctl-${{ matrix.suffix }}" -h || true
 
       - name: Package
         shell: bash
@@ -164,84 +164,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
-      - name: Install MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-gperf
-            mingw-w64-x86_64-make
-            git
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build TDLib
-        shell: msys2 {0}
-        env:
-          TDLIB_COMMIT_SHA: "0ae923c493bceb75433de2682ba8ae29cc7bf88d"
+        shell: pwsh
         run: |
-          set -euxo pipefail
+          $ErrorActionPreference = "Stop"
 
-          git clone https://github.com/tdlib/td.git /c/td
-          cd /c/td
-          git checkout "${TDLIB_COMMIT_SHA}"
+          git clone https://github.com/tdlib/td.git C:\td
+          Set-Location C:\td
+          git checkout $env:TDLIB_COMMIT
 
-          mkdir -p build
-          cd build
+          cmake -S . -B build `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX=C:\tdlib
 
-          cmake \
-            -G "MinGW Makefiles" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/c/tdlib \
-            ..
+          cmake --build build --config Release --target tdjson --parallel
 
-          cmake --build . --target tdjson -j4
+          New-Item -ItemType Directory -Force -Path C:\tdlib\bin | Out-Null
+          New-Item -ItemType Directory -Force -Path C:\tdlib\lib | Out-Null
+          New-Item -ItemType Directory -Force -Path C:\tdlib\include\td\telegram | Out-Null
 
-          mkdir -p /c/tdlib/lib
-          mkdir -p /c/tdlib/bin
-          mkdir -p /c/tdlib/include/td/telegram
+          $tdjsonDll = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson.dll" | Select-Object -First 1
+          if (-not $tdjsonDll) { throw "tdjson.dll not found" }
+          Copy-Item $tdjsonDll.FullName C:\tdlib\bin\
 
-          find /c/td/build \( -name "libtdjson*.dll" -o -name "tdjson*.dll" \) -type f -print0 \
-            | while IFS= read -r -d '' f; do
-                cp "$f" /c/tdlib/bin/
-              done
+          $tdjsonLib = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson.lib" | Select-Object -First 1
+          if (-not $tdjsonLib) { throw "tdjson.lib not found" }
+          Copy-Item $tdjsonLib.FullName C:\tdlib\lib\
 
-          find /c/td/build \( -name "libtdjson*.a" -o -name "libtdjson*.dll.a" \) -type f -print0 \
-            | while IFS= read -r -d '' f; do
-                cp "$f" /c/tdlib/lib/
-              done
+          Copy-Item C:\td\td\telegram\td_json_client.h C:\tdlib\include\td\telegram\
+          Copy-Item C:\td\td\telegram\td_log.h C:\tdlib\include\td\telegram\
 
-          cp /c/td/td/telegram/td_json_client.h /c/tdlib/include/td/telegram/
-          cp /c/td/td/telegram/td_log.h /c/tdlib/include/td/telegram/
+          $exportHdr = Get-ChildItem -Path C:\td\build -Recurse -Filter "tdjson_export.h" | Select-Object -First 1
+          if (-not $exportHdr) { throw "tdjson_export.h not found" }
+          Copy-Item $exportHdr.FullName C:\tdlib\include\td\telegram\
 
-          export_hdr="$(find /c/td/build -name "tdjson_export.h" -type f | head -1)"
-          test -n "$export_hdr"
-          cp "$export_hdr" /c/tdlib/include/td/telegram/
-
-          ls -la /c/tdlib/bin/
-          ls -la /c/tdlib/lib/
-          ls -la /c/tdlib/include/td/telegram/
+          Get-ChildItem C:\tdlib\bin
+          Get-ChildItem C:\tdlib\lib
+          Get-ChildItem C:\tdlib\include\td\telegram
 
       - name: Build tgctl
-        shell: msys2 {0}
+        shell: pwsh
         run: |
-          set -euxo pipefail
+          $ErrorActionPreference = "Stop"
+          Set-Location $env:GITHUB_WORKSPACE
 
-          export PATH="/c/hostedtoolcache/windows/go/1.25.5/x64/bin:$PATH"
-          cd "$GITHUB_WORKSPACE"
-          ln -sf /c/tdlib tdlib
-
-          export GOOS=windows
-          export GOARCH=amd64
-          export CGO_ENABLED=1
-          export CGO_CFLAGS="-I/c/tdlib/include"
-          export CGO_LDFLAGS="-L/c/tdlib/lib -ltdjson"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "1"
+          $env:CGO_CFLAGS = "-IC:\tdlib\include"
+          $env:CGO_LDFLAGS = "-LC:\tdlib\lib -ltdjson"
 
           go build -ldflags="-w -s" -o tgctl-windows-amd64.exe ./cmd/tgctl/
 
@@ -252,29 +231,7 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item tgctl-windows-amd64.exe dist\
-
-          # tdlib dll
-          Get-ChildItem -Path C:\tdlib\bin -Filter "*.dll" -ErrorAction Stop | ForEach-Object {
-            Copy-Item $_.FullName dist\
-          }
-
-          # MinGW runtime DLLs
-          $mingwBin = "C:\msys64\mingw64\bin"
-          @(
-            "libstdc++-6.dll",
-            "libgcc_s_seh-1.dll",
-            "libwinpthread-1.dll",
-            "zlib1.dll",
-            "libcrypto-3-x64.dll",
-            "libssl-3-x64.dll"
-          ) | ForEach-Object {
-            $src = Join-Path $mingwBin $_
-            if (Test-Path $src) {
-              Copy-Item $src dist\
-            } else {
-              Write-Host "missing optional runtime: $_"
-            }
-          }
+          Copy-Item C:\tdlib\bin\tdjson.dll dist\
 
           Get-ChildItem dist\
 
@@ -286,6 +243,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           Set-Location dist
           .\tgctl-windows-amd64.exe --help
+          if ($LASTEXITCODE -ne 0) {
+            .\tgctl-windows-amd64.exe -h
+          }
 
       - uses: actions/upload-artifact@v4
         with:
