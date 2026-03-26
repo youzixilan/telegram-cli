@@ -21,6 +21,12 @@ jobs:
             goos: darwin
             goarch: arm64
             suffix: darwin-arm64
+
+          - os: macos-13
+            goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+
           - os: ubuntu-latest
             goos: linux
             goarch: amd64
@@ -31,76 +37,121 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install gperf openssl cmake
+        run: |
+          brew install gperf openssl@3 cmake
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake gperf libssl-dev zlib1g-dev build-essential
+          sudo apt-get install -y \
+            cmake \
+            gperf \
+            libssl-dev \
+            zlib1g-dev \
+            build-essential
 
       - name: Build TDLib
+        shell: bash
         run: |
+          set -euxo pipefail
+
           git clone https://github.com/tdlib/td.git /tmp/td
           cd /tmp/td
-          git checkout ${{ env.TDLIB_COMMIT }}
-          mkdir -p build && cd build
+          git checkout "${TDLIB_COMMIT}"
+
+          mkdir -p build
+          cd build
 
           if [ "${{ runner.os }}" = "macOS" ]; then
-            OPENSSL_ROOT=$(brew --prefix openssl@3)
+            OPENSSL_ROOT="$(brew --prefix openssl@3)"
           else
-            OPENSSL_ROOT=/usr
+            OPENSSL_ROOT="/usr"
           fi
 
-          cmake -DCMAKE_BUILD_TYPE=Release \
-            -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT \
-            -DCMAKE_INSTALL_PREFIX=$HOME/.local/tdlib \
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR="${OPENSSL_ROOT}" \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local/tdlib" \
             ..
+
           cmake --build . --target tdjson -j4
 
-          # manual install - don't swallow errors silently
-          mkdir -p $HOME/.local/tdlib/lib
-          mkdir -p $HOME/.local/tdlib/include/td/telegram
+          mkdir -p "$HOME/.local/tdlib/lib"
+          mkdir -p "$HOME/.local/tdlib/include/td/telegram"
 
-          # copy library
-          find /tmp/td/build -name "libtdjson*.dylib" -o -name "libtdjson*.so*" | while read f; do cp "$f" $HOME/.local/tdlib/lib/; done
+          find /tmp/td/build \( -name "libtdjson*.dylib" -o -name "libtdjson*.so*" \) -type f -print0 \
+            | while IFS= read -r -d '' f; do
+                cp "$f" "$HOME/.local/tdlib/lib/"
+              done
 
-          # copy headers
-          cp /tmp/td/td/telegram/td_json_client.h $HOME/.local/tdlib/include/td/telegram/
-          cp /tmp/td/td/telegram/td_log.h $HOME/.local/tdlib/include/td/telegram/
-          find /tmp/td/build -name "tdjson_export.h" | head -1 | xargs -I{} cp {} $HOME/.local/tdlib/include/td/telegram/
+          cp /tmp/td/td/telegram/td_json_client.h "$HOME/.local/tdlib/include/td/telegram/"
+          cp /tmp/td/td/telegram/td_log.h "$HOME/.local/tdlib/include/td/telegram/"
 
-          # verify
-          ls -la $HOME/.local/tdlib/lib/
-          ls -la $HOME/.local/tdlib/include/td/telegram/
+          export_hdr="$(find /tmp/td/build -name "tdjson_export.h" -type f | head -1)"
+          test -n "$export_hdr"
+          cp "$export_hdr" "$HOME/.local/tdlib/include/td/telegram/"
+
+          ls -la "$HOME/.local/tdlib/lib/"
+          ls -la "$HOME/.local/tdlib/include/td/telegram/"
 
       - name: Build tgctl
+        shell: bash
         run: |
-          ln -sf $HOME/.local/tdlib ${{ github.workspace }}/tdlib
+          set -euxo pipefail
+
+          ln -sf "$HOME/.local/tdlib" "${{ github.workspace }}/tdlib"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             RPATH_FLAG="-Wl,-rpath,@executable_path"
           else
-            RPATH_FLAG='-Wl,-rpath,$ORIGIN'
+            RPATH_FLAG="-Wl,-rpath,\$ORIGIN"
           fi
 
-          CGO_CFLAGS="-I$HOME/.local/tdlib/include" \
-          CGO_LDFLAGS="-L$HOME/.local/tdlib/lib -ltdjson $RPATH_FLAG" \
-          CGO_ENABLED=1 \
-          go build -ldflags="-w -s" -o tgctl-${{ matrix.suffix }} ./cmd/tgctl/
+          export GOOS="${{ matrix.goos }}"
+          export GOARCH="${{ matrix.goarch }}"
+          export CGO_ENABLED=1
+          export CGO_CFLAGS="-I$HOME/.local/tdlib/include"
+          export CGO_LDFLAGS="-L$HOME/.local/tdlib/lib -ltdjson ${RPATH_FLAG}"
+
+          go build -ldflags="-w -s" -o "tgctl-${{ matrix.suffix }}" ./cmd/tgctl/
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p smoke
+          cp "tgctl-${{ matrix.suffix }}" smoke/
+          cp "$HOME/.local/tdlib/lib"/libtdjson* smoke/
+          cd smoke
+
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            ldd "./tgctl-${{ matrix.suffix }}" || true
+          fi
+
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            otool -L "./tgctl-${{ matrix.suffix }}" || true
+          fi
+
+          "./tgctl-${{ matrix.suffix }}" --help >/dev/null || "./tgctl-${{ matrix.suffix }}" -h >/dev/null || true
 
       - name: Package
+        shell: bash
         run: |
+          set -euxo pipefail
+
           mkdir -p dist
-          cp tgctl-${{ matrix.suffix }} dist/
-          cp $HOME/.local/tdlib/lib/libtdjson* dist/
-          cd dist && tar czf ../tgctl-${{ matrix.suffix }}.tar.gz *
+          cp "tgctl-${{ matrix.suffix }}" dist/
+          cp "$HOME/.local/tdlib/lib"/libtdjson* dist/
+          cd dist
+          tar czf "../tgctl-${{ matrix.suffix }}.tar.gz" *
 
       - uses: actions/upload-artifact@v4
         with:
@@ -109,10 +160,11 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
@@ -132,28 +184,44 @@ jobs:
       - name: Build TDLib
         shell: msys2 {0}
         run: |
+          set -euxo pipefail
+
           git clone https://github.com/tdlib/td.git /c/td
           cd /c/td
-          git checkout 0ae923c493bceb75433de2682ba8ae29cc7bf88d
-          mkdir -p build && cd build
+          git checkout "${TDLIB_COMMIT}"
 
-          cmake -G "MinGW Makefiles" \
+          mkdir -p build
+          cd build
+
+          cmake \
+            -G "MinGW Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/c/tdlib \
             ..
+
           cmake --build . --target tdjson -j4
 
-          # manual install
-          mkdir -p /c/tdlib/lib /c/tdlib/bin /c/tdlib/include/td/telegram
+          mkdir -p /c/tdlib/lib
+          mkdir -p /c/tdlib/bin
+          mkdir -p /c/tdlib/include/td/telegram
 
-          find /c/td/build -name "libtdjson*.dll" -o -name "tdjson*.dll" | while read f; do cp "$f" /c/tdlib/bin/; done
-          find /c/td/build -name "libtdjson*.a" -o -name "libtdjson*.dll.a" | while read f; do cp "$f" /c/tdlib/lib/; done
+          find /c/td/build \( -name "libtdjson*.dll" -o -name "tdjson*.dll" \) -type f -print0 \
+            | while IFS= read -r -d '' f; do
+                cp "$f" /c/tdlib/bin/
+              done
+
+          find /c/td/build \( -name "libtdjson*.a" -o -name "libtdjson*.dll.a" \) -type f -print0 \
+            | while IFS= read -r -d '' f; do
+                cp "$f" /c/tdlib/lib/
+              done
 
           cp /c/td/td/telegram/td_json_client.h /c/tdlib/include/td/telegram/
           cp /c/td/td/telegram/td_log.h /c/tdlib/include/td/telegram/
-          find /c/td/build -name "tdjson_export.h" | head -1 | xargs -I{} cp {} /c/tdlib/include/td/telegram/
 
-          # verify
+          export_hdr="$(find /c/td/build -name "tdjson_export.h" -type f | head -1)"
+          test -n "$export_hdr"
+          cp "$export_hdr" /c/tdlib/include/td/telegram/
+
           ls -la /c/tdlib/bin/
           ls -la /c/tdlib/lib/
           ls -la /c/tdlib/include/td/telegram/
@@ -161,30 +229,63 @@ jobs:
       - name: Build tgctl
         shell: msys2 {0}
         run: |
-          export PATH="/c/hostedtoolcache/windows/go/1.25.5/x64/bin:$PATH"
-          cd $GITHUB_WORKSPACE
+          set -euxo pipefail
+
+          cd "$GITHUB_WORKSPACE"
           ln -sf /c/tdlib tdlib
 
-          CGO_CFLAGS="-I/c/tdlib/include" \
-          CGO_LDFLAGS="-L/c/tdlib/lib -ltdjson" \
-          CGO_ENABLED=1 \
+          export GOOS=windows
+          export GOARCH=amd64
+          export CGO_ENABLED=1
+          export CGO_CFLAGS="-I/c/tdlib/include"
+          export CGO_LDFLAGS="-L/c/tdlib/lib -ltdjson"
+
           go build -ldflags="-w -s" -o tgctl-windows-amd64.exe ./cmd/tgctl/
 
       - name: Package
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item tgctl-windows-amd64.exe dist\
-          # tdjson dll
-          Get-ChildItem -Path C:\tdlib\bin -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName dist\ }
+
+          # tdlib dll
+          Get-ChildItem -Path C:\tdlib\bin -Filter "*.dll" -ErrorAction Stop | ForEach-Object {
+            Copy-Item $_.FullName dist\
+          }
+
           # MinGW runtime DLLs
           $mingwBin = "C:\msys64\mingw64\bin"
-          @("libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "zlib1.dll", "libcrypto-3-x64.dll", "libssl-3-x64.dll") | ForEach-Object {
+          @(
+            "libstdc++-6.dll",
+            "libgcc_s_seh-1.dll",
+            "libwinpthread-1.dll",
+            "zlib1.dll",
+            "libcrypto-3-x64.dll",
+            "libssl-3-x64.dll"
+          ) | ForEach-Object {
             $src = Join-Path $mingwBin $_
-            if (Test-Path $src) { Copy-Item $src dist\ }
+            if (Test-Path $src) {
+              Copy-Item $src dist\
+            } else {
+              Write-Host "missing optional runtime: $_"
+            }
           }
+
           Get-ChildItem dist\
-          Compress-Archive -Path dist\* -DestinationPath tgctl-windows-amd64.zip
+
+          Compress-Archive -Path dist\* -DestinationPath tgctl-windows-amd64.zip -Force
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location dist
+          .\tgctl-windows-amd64.exe --help *> $null
+          if ($LASTEXITCODE -ne 0) {
+            .\tgctl-windows-amd64.exe -h *> $null
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -194,6 +295,7 @@ jobs:
   release:
     needs: [build, build-windows]
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/download-artifact@v4
         with:
