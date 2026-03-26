@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  TDLIB_COMMIT: "0ae923c493bceb75433de2682ba8ae29cc7bf88d"
+
 jobs:
   build:
     strategy:
@@ -44,30 +47,51 @@ jobs:
 
       - name: Build TDLib
         run: |
-          git clone --depth 1 https://github.com/tdlib/td.git /tmp/td
-          mkdir -p /tmp/td/build
-          cd /tmp/td/build
+          git clone https://github.com/tdlib/td.git /tmp/td
+          cd /tmp/td
+          git checkout ${{ env.TDLIB_COMMIT }}
+          mkdir -p build && cd build
+
           if [ "${{ runner.os }}" = "macOS" ]; then
             OPENSSL_ROOT=$(brew --prefix openssl@3)
           else
             OPENSSL_ROOT=/usr
           fi
+
           cmake -DCMAKE_BUILD_TYPE=Release \
             -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT \
             -DCMAKE_INSTALL_PREFIX=$HOME/.local/tdlib \
             ..
           cmake --build . --target tdjson -j4
-          cmake --install . || true
+
+          # manual install - don't swallow errors silently
+          mkdir -p $HOME/.local/tdlib/lib
           mkdir -p $HOME/.local/tdlib/include/td/telegram
-          cp /tmp/td/td/telegram/td_json_client.h $HOME/.local/tdlib/include/td/telegram/ 2>/dev/null || true
-          cp /tmp/td/td/telegram/td_log.h $HOME/.local/tdlib/include/td/telegram/ 2>/dev/null || true
-          find /tmp/td/build -name "tdjson_export.h" -exec cp {} $HOME/.local/tdlib/include/td/telegram/ \; 2>/dev/null || true
+
+          # copy library
+          find /tmp/td/build -name "libtdjson*.dylib" -o -name "libtdjson*.so*" | while read f; do cp "$f" $HOME/.local/tdlib/lib/; done
+
+          # copy headers
+          cp /tmp/td/td/telegram/td_json_client.h $HOME/.local/tdlib/include/td/telegram/
+          cp /tmp/td/td/telegram/td_log.h $HOME/.local/tdlib/include/td/telegram/
+          find /tmp/td/build -name "tdjson_export.h" | head -1 | xargs -I{} cp {} $HOME/.local/tdlib/include/td/telegram/
+
+          # verify
+          ls -la $HOME/.local/tdlib/lib/
+          ls -la $HOME/.local/tdlib/include/td/telegram/
 
       - name: Build tgctl
         run: |
           ln -sf $HOME/.local/tdlib ${{ github.workspace }}/tdlib
+
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            RPATH_FLAG="-Wl,-rpath,@executable_path"
+          else
+            RPATH_FLAG='-Wl,-rpath,$ORIGIN'
+          fi
+
           CGO_CFLAGS="-I$HOME/.local/tdlib/include" \
-          CGO_LDFLAGS="-L$HOME/.local/tdlib/lib -ltdjson" \
+          CGO_LDFLAGS="-L$HOME/.local/tdlib/lib -ltdjson $RPATH_FLAG" \
           CGO_ENABLED=1 \
           go build -ldflags="-w -s" -o tgctl-${{ matrix.suffix }} ./cmd/tgctl/
 
@@ -75,7 +99,7 @@ jobs:
         run: |
           mkdir -p dist
           cp tgctl-${{ matrix.suffix }} dist/
-          cp $HOME/.local/tdlib/lib/libtdjson* dist/ 2>/dev/null || true
+          cp $HOME/.local/tdlib/lib/libtdjson* dist/
           cd dist && tar czf ../tgctl-${{ matrix.suffix }}.tar.gz *
 
       - uses: actions/upload-artifact@v4
@@ -108,27 +132,39 @@ jobs:
       - name: Build TDLib
         shell: msys2 {0}
         run: |
-          git clone --depth 1 https://github.com/tdlib/td.git /c/td
-          mkdir -p /c/td/build
-          cd /c/td/build
+          git clone https://github.com/tdlib/td.git /c/td
+          cd /c/td
+          git checkout 0ae923c493bceb75433de2682ba8ae29cc7bf88d
+          mkdir -p build && cd build
+
           cmake -G "MinGW Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/c/tdlib \
             ..
           cmake --build . --target tdjson -j4
-          cmake --install . || true
-          mkdir -p /c/tdlib/include/td/telegram
-          cp /c/td/td/telegram/td_json_client.h /c/tdlib/include/td/telegram/ 2>/dev/null || true
-          cp /c/td/td/telegram/td_log.h /c/tdlib/include/td/telegram/ 2>/dev/null || true
-          find /c/td/build -name "tdjson_export.h" -exec cp {} /c/tdlib/include/td/telegram/ \; 2>/dev/null || true
+
+          # manual install
+          mkdir -p /c/tdlib/lib /c/tdlib/bin /c/tdlib/include/td/telegram
+
+          find /c/td/build -name "libtdjson*.dll" -o -name "tdjson*.dll" | while read f; do cp "$f" /c/tdlib/bin/; done
+          find /c/td/build -name "libtdjson*.a" -o -name "libtdjson*.dll.a" | while read f; do cp "$f" /c/tdlib/lib/; done
+
+          cp /c/td/td/telegram/td_json_client.h /c/tdlib/include/td/telegram/
+          cp /c/td/td/telegram/td_log.h /c/tdlib/include/td/telegram/
+          find /c/td/build -name "tdjson_export.h" | head -1 | xargs -I{} cp {} /c/tdlib/include/td/telegram/
+
+          # verify
+          ls -la /c/tdlib/bin/
+          ls -la /c/tdlib/lib/
+          ls -la /c/tdlib/include/td/telegram/
 
       - name: Build tgctl
         shell: msys2 {0}
         run: |
           export PATH="/c/hostedtoolcache/windows/go/1.25.5/x64/bin:$PATH"
           cd $GITHUB_WORKSPACE
-          mkdir -p tdlib
-          cp -r /c/tdlib/* tdlib/
+          ln -sf /c/tdlib tdlib
+
           CGO_CFLAGS="-I/c/tdlib/include" \
           CGO_LDFLAGS="-L/c/tdlib/lib -ltdjson" \
           CGO_ENABLED=1 \
@@ -139,8 +175,15 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item tgctl-windows-amd64.exe dist\
+          # tdjson dll
           Get-ChildItem -Path C:\tdlib\bin -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName dist\ }
-          Get-ChildItem -Path C:\tdlib\lib -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName dist\ }
+          # MinGW runtime DLLs
+          $mingwBin = "C:\msys64\mingw64\bin"
+          @("libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "zlib1.dll", "libcrypto-3-x64.dll", "libssl-3-x64.dll") | ForEach-Object {
+            $src = Join-Path $mingwBin $_
+            if (Test-Path $src) { Copy-Item $src dist\ }
+          }
+          Get-ChildItem dist\
           Compress-Archive -Path dist\* -DestinationPath tgctl-windows-amd64.zip
 
       - uses: actions/upload-artifact@v4
