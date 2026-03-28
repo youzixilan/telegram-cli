@@ -6,11 +6,16 @@ Telegram CLI tool powered by [gotd/td](https://github.com/gotd/td) — pure Go, 
 
 ### Pre-built binary
 
+Download and review the install script before running:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/youzixilan/telegram-cli/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/youzixilan/telegram-cli/main/scripts/install.sh -o /tmp/install-tgctl.sh
+cat /tmp/install-tgctl.sh   # Review the script
+bash /tmp/install-tgctl.sh
+rm /tmp/install-tgctl.sh
 ```
 
-Or download from [Releases](https://github.com/youzixilan/telegram-cli/releases).
+Or download directly from [Releases](https://github.com/youzixilan/telegram-cli/releases).
 
 ### Build from source
 
@@ -49,3 +54,16 @@ Sessions stored in `~/.tgctl/<profile>/`.
 - macOS (arm64, amd64)
 - Linux (amd64, arm64)
 - Windows (amd64)
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for details.
+
+- All credentials are passed via environment variables, never stored in code
+- tgctl only communicates with official Telegram servers
+- Login requires interactive user input (phone + SMS code + optional 2FA)
+- No telemetry, no analytics, no third-party API calls
+
+## License
+
+MIT — see [LICENSE](LICENSE)
